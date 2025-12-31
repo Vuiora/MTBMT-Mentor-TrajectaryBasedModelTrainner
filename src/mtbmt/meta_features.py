@@ -39,9 +39,20 @@ class DatasetMetaFeatures:
 
 
 def infer_task(y: np.ndarray) -> Tuple[str, int, bool]:
+    """
+    粗略推断任务类型（分类/回归）。
+
+    约束：该项目常从 CSV 读取，y 可能是字符串/类别；此时应优先按分类处理，
+    否则后续默认 scoring/estimator 可能不兼容（如 roc_auc 需要分类标签）。
+    """
     y = np.asarray(y)
-    y_is_int = bool(np.all(np.isclose(y, np.round(y))))
     y_unique = int(len(np.unique(y)))
+
+    # 非数值标签：直接视为分类任务
+    if not np.issubdtype(y.dtype, np.number):
+        return "classification", y_unique, False
+
+    y_is_int = bool(np.all(np.isclose(y, np.round(y))))
     approx_task = "classification" if (y_is_int and y_unique <= max(20, int(0.1 * len(y)))) else "regression"
     return approx_task, y_unique, y_is_int
 

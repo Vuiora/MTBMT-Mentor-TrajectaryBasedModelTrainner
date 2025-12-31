@@ -125,7 +125,8 @@ class MutualInfoScorer(BaseRelevanceScorer):
 
     @property
     def name(self) -> str:  # type: ignore[override]
-        return f"mutual_info(n_neighbors={self.n_neighbors})"
+        # 用稳定的“算法族”名称，避免因为超参数不同导致经验库 label 破碎。
+        return "mutual_info"
 
     def fit_score(self, X: np.ndarray, y: np.ndarray, feature_names: Optional[Iterable[str]] = None) -> RelevanceResult:
         t0 = time.perf_counter()
@@ -150,7 +151,11 @@ class MutualInfoScorer(BaseRelevanceScorer):
 
         dt = time.perf_counter() - t0
         names = _ensure_feature_names(feature_names, X.shape[1])
-        return RelevanceResult(names, np.asarray(scores, dtype=float), meta={"runtime_sec": dt, "task": task})
+        return RelevanceResult(
+            names,
+            np.asarray(scores, dtype=float),
+            meta={"runtime_sec": dt, "task": task, "n_neighbors": int(self.n_neighbors)},
+        )
 
 
 @dataclass

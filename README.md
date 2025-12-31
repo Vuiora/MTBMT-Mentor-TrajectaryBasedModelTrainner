@@ -30,3 +30,12 @@ python3 scripts/benchmark_relevance.py --csv data.csv --target label --k 20 --cv
 ```
 
 输出会打印 `selected_method`，并将本次经验追加到 `experience/experience.jsonl`。
+
+### 轨迹指导（新增示例）
+
+仓库里也提供了一个最小的“轨迹纠偏/算法指导”示例：根据你提供的偏好参数（更高效果/更短轨迹/更低时间），
+迭代调整目标学习算法（示例使用 `DecisionTreeClassifier`）的超参，让其学习轨迹更接近“更优质路线”。
+
+```bash
+python3 scripts/trajectory/guide_decision_tree.py --w-effect 1.0 --w-length 0.05 --w-time 0.10 --iters 6 --traj-samples 512
+```

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import time
+import warnings
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional
 
 import numpy as np
 from sklearn.base import clone
 from sklearn.linear_model import LogisticRegression, Ridge
+from sklearn.exceptions import ConvergenceWarning
 from sklearn.metrics import get_scorer
 from sklearn.model_selection import StratifiedKFold, KFold
 
@@ -63,10 +65,14 @@ def evaluate_relevance_method(
     """
 
     t0 = time.perf_counter()
-    approx_task, _, _ = infer_task(y)
+    approx_task, y_unique, _ = infer_task(y)
 
     if scoring is None:
-        scoring = "roc_auc" if approx_task == "classification" else "r2"
+        if approx_task == "classification":
+            # 二分类：roc_auc；多分类：默认用 accuracy（roc_auc 需要显式 multi_class 配置，容易因数据集而报错）
+            scoring = "roc_auc" if int(y_unique) == 2 else "accuracy"
+        else:
+            scoring = "r2"
 
     if estimator is None:
         estimator = (
@@ -92,7 +98,11 @@ def evaluate_relevance_method(
         fold_topk.append(idx)
 
         est = clone(estimator)
-        est.fit(X[tr][:, idx], y[tr])
+        # 大量数据集批跑时 LogisticRegression 可能出现收敛告警；对本项目的“相对比较”影响不大，
+        # 但会刷屏影响可用性，所以这里静默 ConvergenceWarning。
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=ConvergenceWarning)
+            est.fit(X[tr][:, idx], y[tr])
         fold_scores.append(float(score_fn(est, X[te][:, idx], y[te])))
 
     # 稳定性：两两Jaccard平均

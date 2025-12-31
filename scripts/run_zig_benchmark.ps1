@@ -108,8 +108,9 @@ Write-Host "Seed     : $Seed"
 Push-Location $zigDir
 try {
   $zigArgs = @(
-    "build", "run",
-    ("-Doptimize=" + $Optimize),
+    "run",
+    "src/main.zig",
+    "-O", $Optimize,
     "--",
     "--csv", $csvRelFromZigDir,
     "--target", $Target,

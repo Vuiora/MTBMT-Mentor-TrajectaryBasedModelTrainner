@@ -83,6 +83,18 @@
  
  ## 三、元学习：用“数据元特征 + 学习轨迹特征”做算法选择/指导
  
+### 0) 关键概念（状态/轨迹/倾向/倾向学习/算法指导）
+
+为避免“轨迹/倾向/指导”在不同语境下含义漂移，这里给出统一的简要定义：
+
+- **算法状态**：当前算法在某一步的**所有可被观测的状态**（例如 loss/score、梯度范数、重要性向量的统计量、树节点不纯度等）。
+- **算法轨迹**：按时序排列的一系列相邻状态 \((s_1,s_2,\dots,s_T)\)。
+- **倾向**：轨迹的变化方向/趋势（例如早期/晚期斜率、震荡幅度、从“探索”向“收敛”的转向点等）。
+- **倾向学习算法**：通过学习“轨迹模式（倾向的量化特征）\(\rightarrow\) 结果/质量”的关联，为相似结构/情况/经验的学习算法提供指导。
+- **算法指导**：在训练过程中，根据轨迹是否偏离“优质路线”，纠正轨迹并促使算法调整学习函数或超参数，实现训练优化。
+
+> 本仓库的“本质”是：我们使用特征相关性量化分析的算法，对各特征相关性分析算法做量化对比，选取最优量化算法并记录经验特征。进一步地，通过学习学习算法的学习轨迹（元学习）及其与数据特征之间的相关性，来实现**算法选择**与**算法指导**。
+
  ### 1) 数据集元特征（Meta-features）
  
  目标：低成本、可泛化、与算法适配性强。常用：
@@ -102,6 +114,12 @@
  - 梯度/更新范数：是否存在震荡、是否过早停滞
  
  直觉：当训练曲线表现出“强非线性/强交互”迹象时，优先选择 MI/dCor/模型重要性；当曲线平滑且线性模型即可拟合时，优先 Pearson/Spearman/Lasso 类。
+
+代码落点：
+
+- 轨迹曲线统计特征：`src/mtbmt/trajectory.py`
+- （示例）决策树“根到叶路径”轨迹提取与汇总：`src/mtbmt/decision_tree_trajectory.py`
+- （示例）轨迹纠偏/算法指导：`src/mtbmt/trajectory_guidance.py` 与 `scripts/trajectory/guide_decision_tree.py`
  
  ### 3) 元学习任务定义
  
@@ -143,3 +161,19 @@
  - `mtbmt/experience_store.py`：经验库 JSONL 追加
  - `mtbmt/meta_learner.py`：元学习选择器 baseline（RandomForest）
  - `scripts/benchmark_relevance.py`：端到端基准 + 写入经验库
+
+---
+
+## 六、元学习选择器的离线评估（Python 主线）
+
+当前仓库**仅维护 Python 版本**的元学习评估与训练口径。
+
+- **入口**：`scripts/evaluate_meta_selector.py`
+- **选择器**：训练 `sklearn.ensemble.RandomForestClassifier`（见 `make_model()`），输入为每条经验记录的扁平化特征：
+  - `meta_features`（数据集元特征）
+  - `trajectory_features`（若存在则加 `traj__` 前缀拼接）
+- **切分**：`GroupKFold` 按 `dataset_id` 分组切分（严格做到同一 `dataset_id` 不跨 train/test）
+- **建议**：开启 `--aggregate-by-dataset` 以减少同一 `dataset_id` 多条记录带来的标签噪声，Top1 会更稳定
+- **输出指标**：Top1/TopN 命中率、regret（相对最优的差距）、以及“只跑 Top1/TopN”带来的时间节省（用 `runtime_sec` 聚合估算）
+
+如果你要回答“当前元学习算法是否优秀”（即 `mtbmt/meta_learner.py` 这条 RandomForest 主线），以该脚本输出为准。

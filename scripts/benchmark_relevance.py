@@ -80,6 +80,24 @@ def main():
         default=0,
         help="If >0, keep running benchmarks until the wall-clock budget is reached (overrides --runs).",
     )
+    ap.add_argument(
+        "--w-utility",
+        type=float,
+        default=1.0,
+        help="Weight for utility (cv_score_mean) in objective J(A).",
+    )
+    ap.add_argument(
+        "--w-stability",
+        type=float,
+        default=0.10,
+        help="Weight for stability (stability_jaccard) in objective J(A).",
+    )
+    ap.add_argument(
+        "--w-cost",
+        type=float,
+        default=0.15,
+        help="Weight for cost penalty log(1+runtime_sec) in objective J(A). Higher -> prefer faster methods.",
+    )
     ap.add_argument("--no-progress", action="store_true", help="Disable progress output.")
     args = ap.parse_args()
 
@@ -125,6 +143,12 @@ def main():
     store = ExperienceStore(args.store)
     progress = _Progress(enabled=not args.no_progress)
 
+    def _objective_j(cv_score_mean: float, stability_jaccard: float, runtime_sec: float) -> float:
+        # J(A)=w_u*Utility + w_s*Stability - w_c*log(1+Cost)
+        return float(args.w_utility) * float(cv_score_mean) + float(args.w_stability) * float(stability_jaccard) - float(args.w_cost) * float(
+            np.log1p(max(float(runtime_sec), 0.0))
+        )
+
     def _one_run(run_idx: int) -> None:
         evaluations = {}
         eval_objs = []
@@ -145,13 +169,24 @@ def main():
                 scoring=args.scoring,
                 random_state=0,
             )
-            evaluations[ev.method_name] = ev.as_dict()
+            ev_dict = ev.as_dict()
+            ev_dict["objective_j"] = _objective_j(ev.cv_score_mean, ev.stability_jaccard, ev.runtime_sec)
+            evaluations[ev.method_name] = ev_dict
             eval_objs.append(ev)
         progress.done()
 
-        # 选择规则：cv_score_mean 最大；如相同则选稳定性更高；再相同选更快
-        eval_objs.sort(key=lambda e: (e.cv_score_mean, e.stability_jaccard, -e.runtime_sec), reverse=True)
+        # 选择规则：最大化综合目标 J(A)，并保留可解释的 tie-break
+        eval_objs.sort(
+            key=lambda e: (
+                _objective_j(e.cv_score_mean, e.stability_jaccard, e.runtime_sec),
+                e.cv_score_mean,
+                e.stability_jaccard,
+                -e.runtime_sec,
+            ),
+            reverse=True,
+        )
         best = eval_objs[0]
+        best_j = _objective_j(best.cv_score_mean, best.stability_jaccard, best.runtime_sec)
 
         rec = ExperienceRecord(
             dataset_id=_dataset_id_from_path(args.csv),
@@ -160,8 +195,10 @@ def main():
             evaluations=evaluations,
             selected_method=best.method_name,
             selection_reason={
-                "rule": "max(cv_score_mean) -> max(stability_jaccard) -> min(runtime_sec)",
-                "best_metrics": best.as_dict(),
+                "rule": "maximize J(A)=w_u*cv + w_s*stability - w_c*log(1+runtime)",
+                "weights": {"w_utility": args.w_utility, "w_stability": args.w_stability, "w_cost": args.w_cost},
+                "best_objective_j": best_j,
+                "best_metrics": evaluations[best.method_name],
                 "run_idx": run_idx,
                 "methods": [s.name for s in scorers],
                 "params": {
@@ -178,7 +215,8 @@ def main():
         store.append(rec)
 
         print("selected_method:", best.method_name)
-        print("best_metrics:", best.as_dict())
+        print("best_objective_j:", best_j)
+        print("best_metrics:", evaluations[best.method_name])
         print("experience_appended_to:", str(Path(args.store).resolve()))
 
     if args.time_budget_sec and args.time_budget_sec > 0:
