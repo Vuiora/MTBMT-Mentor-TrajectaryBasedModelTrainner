@@ -1,5 +1,6 @@
 import argparse
 import hashlib
+import time
 from pathlib import Path
 
 import numpy as np
@@ -19,6 +20,21 @@ def _dataset_id_from_path(path: str) -> str:
     return f"{p.stem}-{h}"
 
 
+def _parse_methods(s: str | None) -> set[str] | None:
+    """
+    Parse comma-separated method keys. Supported:
+    - pearson
+    - spearman
+    - mi
+    - dcor
+    - perm
+    """
+    if s is None:
+        return None
+    items = [x.strip().lower() for x in s.split(",") if x.strip()]
+    return set(items)
+
+
 def main():
     ap = argparse.ArgumentParser(description="Benchmark feature relevance scorers and store experience (JSONL).")
     ap.add_argument("--csv", required=True, help="CSV dataset path")
@@ -27,6 +43,21 @@ def main():
     ap.add_argument("--cv", type=int, default=5, help="CV folds")
     ap.add_argument("--store", default="experience/experience.jsonl", help="Experience store JSONL path")
     ap.add_argument("--scoring", default=None, help="sklearn scoring name (e.g., roc_auc, accuracy, r2, neg_rmse)")
+    ap.add_argument(
+        "--methods",
+        default=None,
+        help="Comma-separated subset of methods: pearson,spearman,mi,dcor,perm (default: all).",
+    )
+    ap.add_argument("--rf-estimators", type=int, default=300, help="RandomForest n_estimators used by permutation importance.")
+    ap.add_argument("--perm-cv", type=int, default=3, help="Permutation importance CV folds inside scorer.")
+    ap.add_argument("--perm-repeats", type=int, default=5, help="Permutation repeats (higher -> much slower).")
+    ap.add_argument("--runs", type=int, default=1, help="How many benchmark runs to execute (append experience each run).")
+    ap.add_argument(
+        "--time-budget-sec",
+        type=int,
+        default=0,
+        help="If >0, keep running benchmarks until the wall-clock budget is reached (overrides --runs).",
+    )
     args = ap.parse_args()
 
     df = pd.read_csv(args.csv)
@@ -42,59 +73,92 @@ def main():
 
     approx_task, _, _ = infer_task(y)
     if approx_task == "classification":
-        base_est = RandomForestClassifier(n_estimators=300, random_state=0, n_jobs=-1)
+        base_est = RandomForestClassifier(n_estimators=args.rf_estimators, random_state=0, n_jobs=-1)
     else:
-        base_est = RandomForestRegressor(n_estimators=300, random_state=0, n_jobs=-1)
+        base_est = RandomForestRegressor(n_estimators=args.rf_estimators, random_state=0, n_jobs=-1)
 
-    scorers = [
-        PearsonAbsScorer(),
-        SpearmanAbsScorer(),
-        MutualInfoScorer(task=approx_task, n_neighbors=3, random_state=0),
-        DistanceCorrelationScorer(),
-        PermutationImportanceScorer(estimator=base_est, cv=3, n_repeats=5, random_state=0, task=approx_task),
-    ]
+    selected = _parse_methods(args.methods)
+    scorers = []
+    if selected is None or "pearson" in selected:
+        scorers.append(PearsonAbsScorer())
+    if selected is None or "spearman" in selected:
+        scorers.append(SpearmanAbsScorer())
+    if selected is None or "mi" in selected:
+        scorers.append(MutualInfoScorer(task=approx_task, n_neighbors=3, random_state=0))
+    if selected is None or "dcor" in selected:
+        scorers.append(DistanceCorrelationScorer())
+    if selected is None or "perm" in selected:
+        scorers.append(
+            PermutationImportanceScorer(
+                estimator=base_est,
+                cv=args.perm_cv,
+                n_repeats=args.perm_repeats,
+                random_state=0,
+                task=approx_task,
+            )
+        )
 
     meta = compute_dataset_meta_features(X, y).as_dict()
-
-    evaluations = {}
-    eval_objs = []
-    for s in scorers:
-        ev = evaluate_relevance_method(
-            X,
-            y,
-            s,
-            feature_names=feature_names,
-            k=args.k,
-            cv=args.cv,
-            scoring=args.scoring,
-            random_state=0,
-        )
-        evaluations[ev.method_name] = ev.as_dict()
-        eval_objs.append(ev)
-
-    # 选择规则：cv_score_mean 最大；如相同则选稳定性更高；再相同选更快
-    eval_objs.sort(key=lambda e: (e.cv_score_mean, e.stability_jaccard, -e.runtime_sec), reverse=True)
-    best = eval_objs[0]
-
-    rec = ExperienceRecord(
-        dataset_id=_dataset_id_from_path(args.csv),
-        meta_features=meta,
-        trajectory_features=None,  # 轨迹特征需从训练过程日志导入；这里先留空
-        evaluations=evaluations,
-        selected_method=best.method_name,
-        selection_reason={
-            "rule": "max(cv_score_mean) -> max(stability_jaccard) -> min(runtime_sec)",
-            "best_metrics": best.as_dict(),
-        },
-        created_at_utc=now_utc_iso(),
-    )
-
     store = ExperienceStore(args.store)
-    store.append(rec)
 
-    print("selected_method:", best.method_name)
-    print("best_metrics:", best.as_dict())
-    print("experience_appended_to:", str(Path(args.store).resolve()))
+    def _one_run(run_idx: int) -> None:
+        evaluations = {}
+        eval_objs = []
+        for s in scorers:
+            ev = evaluate_relevance_method(
+                X,
+                y,
+                s,
+                feature_names=feature_names,
+                k=args.k,
+                cv=args.cv,
+                scoring=args.scoring,
+                random_state=0,
+            )
+            evaluations[ev.method_name] = ev.as_dict()
+            eval_objs.append(ev)
+
+        # 选择规则：cv_score_mean 最大；如相同则选稳定性更高；再相同选更快
+        eval_objs.sort(key=lambda e: (e.cv_score_mean, e.stability_jaccard, -e.runtime_sec), reverse=True)
+        best = eval_objs[0]
+
+        rec = ExperienceRecord(
+            dataset_id=_dataset_id_from_path(args.csv),
+            meta_features=meta,
+            trajectory_features=None,  # 轨迹特征需从训练过程日志导入；这里先留空
+            evaluations=evaluations,
+            selected_method=best.method_name,
+            selection_reason={
+                "rule": "max(cv_score_mean) -> max(stability_jaccard) -> min(runtime_sec)",
+                "best_metrics": best.as_dict(),
+                "run_idx": run_idx,
+                "methods": [s.name for s in scorers],
+                "params": {
+                    "k": args.k,
+                    "cv": args.cv,
+                    "scoring": args.scoring,
+                    "rf_estimators": args.rf_estimators,
+                    "perm_cv": args.perm_cv,
+                    "perm_repeats": args.perm_repeats,
+                },
+            },
+            created_at_utc=now_utc_iso(),
+        )
+        store.append(rec)
+
+        print("selected_method:", best.method_name)
+        print("best_metrics:", best.as_dict())
+        print("experience_appended_to:", str(Path(args.store).resolve()))
+
+    if args.time_budget_sec and args.time_budget_sec > 0:
+        deadline = time.time() + float(args.time_budget_sec)
+        run_idx = 1
+        while time.time() < deadline:
+            _one_run(run_idx)
+            run_idx += 1
+    else:
+        for i in range(1, int(args.runs) + 1):
+            _one_run(i)
 
 
 if __name__ == "__main__":
