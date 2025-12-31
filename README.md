@@ -1,0 +1,2 @@
+# MTBMT-Mentor-TrajectaryBasedModelTrainner
+通过学习学习算法的学习轨迹，实现算法训练时对于算法的指导
