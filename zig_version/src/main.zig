@@ -9,6 +9,7 @@ const Method = enum { pearson, spearman, mi };
 const MethodEval = struct {
     method: Method,
     k: usize,
+    runs: usize,
     cv_score_mean: f64,
     cv_score_std: f64,
     stability_jaccard: f64,
@@ -55,6 +56,9 @@ fn parseArgs(alloc: Allocator) !Args {
         .k = 20,
         .cv = 5,
         .store = store,
+        .seed = 0,
+        .repeats = 1,
+        .time_budget_sec = 0,
         .methods = .{ .pearson = true, .spearman = true, .mi = true },
     };
 
@@ -80,6 +84,15 @@ fn parseArgs(alloc: Allocator) !Args {
             alloc.free(args.store);
             store = try alloc.dupe(u8, v);
             args.store = store;
+        } else if (std.mem.eql(u8, a, "--seed")) {
+            const v = it.next() orelse return error.InvalidArgs;
+            args.seed = try std.fmt.parseInt(u64, v, 10);
+        } else if (std.mem.eql(u8, a, "--repeats")) {
+            const v = it.next() orelse return error.InvalidArgs;
+            args.repeats = try std.fmt.parseInt(usize, v, 10);
+        } else if (std.mem.eql(u8, a, "--time-budget-sec")) {
+            const v = it.next() orelse return error.InvalidArgs;
+            args.time_budget_sec = try std.fmt.parseInt(u64, v, 10);
         } else if (std.mem.eql(u8, a, "--methods")) {
             const v = it.next() orelse return error.InvalidArgs;
             args.methods = try parseMethods(v);
@@ -103,6 +116,9 @@ const Args = struct {
     k: usize,
     cv: usize,
     store: []u8,
+    seed: u64,
+    repeats: usize,
+    time_budget_sec: u64,
     methods: MethodsMask,
 };
 
@@ -123,11 +139,14 @@ fn printUsage() void {
         \\
         \\Usage:
         \\  mtbmt_benchmark --csv <path> --target <col> [--k 20] [--cv 5] [--store <jsonl>] [--methods pearson,spearman,mi]
+        \\                 [--seed 0] [--repeats 1] [--time-budget-sec 0]
         \\
         \\Notes:
         \\  - CSV must contain a header row.
         \\  - All feature columns are parsed as f64; non-numeric becomes NaN.
         \\  - MI is binned approximation.
+        \\  - If --time-budget-sec > 0, the program will repeat evaluations until the budget is reached.
+        \\    Otherwise it will run exactly --repeats rounds (default 1).
         \\
         \\
     , .{});
@@ -790,9 +809,9 @@ fn solveLinearSystemInPlace(alloc: Allocator, A: []f64, b: []f64, out: []f64, n:
     @memcpy(out, b[0..n]);
 }
 
-fn evaluateMethod(alloc: Allocator, d: Dataset, method: Method, k: usize, cv: usize) !MethodEval {
+fn evaluateMethod(alloc: Allocator, d: Dataset, method: Method, k: usize, cv: usize, seed: u64) !MethodEval {
     var timer = try std.time.Timer.start();
-    const folds = if (d.task == .classification) try stratifiedFolds(alloc, d.y, cv, 0) else try kfoldFolds(alloc, d.n, cv, 0);
+    const folds = if (d.task == .classification) try stratifiedFolds(alloc, d.y, cv, seed) else try kfoldFolds(alloc, d.n, cv, seed);
     defer {
         for (folds) |f| alloc.free(f);
         alloc.free(folds);
@@ -860,6 +879,7 @@ fn evaluateMethod(alloc: Allocator, d: Dataset, method: Method, k: usize, cv: us
     return .{
         .method = method,
         .k = k,
+        .runs = 1,
         .cv_score_mean = mean,
         .cv_score_std = stdv,
         .stability_jaccard = stability,
@@ -970,10 +990,11 @@ fn writeExperienceJsonl(
     try buf.writer().print("\"evaluations\":{{", .{});
     for (evals, 0..) |e, i| {
         if (i != 0) try buf.appendSlice(",");
-        try buf.writer().print("\"{s}\":{{\"method_name\":\"{s}\",\"k\":{},\"cv_score_mean\":{d:.12},\"cv_score_std\":{d:.12},\"stability_jaccard\":{d:.12},\"runtime_sec\":{d:.6}}}", .{
+        try buf.writer().print("\"{s}\":{{\"method_name\":\"{s}\",\"k\":{},\"runs\":{},\"cv_score_mean\":{d:.12},\"cv_score_std\":{d:.12},\"stability_jaccard\":{d:.12},\"runtime_sec\":{d:.6}}}", .{
             methodName(e.method),
             methodName(e.method),
             e.k,
+            e.runs,
             e.cv_score_mean,
             e.cv_score_std,
             e.stability_jaccard,
@@ -1039,13 +1060,55 @@ pub fn main() !void {
     if (args.methods.mi) try methods_list.append(.mi);
     if (methods_list.items.len == 0) return error.InvalidArgs;
 
+    // Aggregate repeated evaluations (either fixed repeats, or time budget).
+    const Agg = struct {
+        runs: usize = 0,
+        sum_mean: f64 = 0,
+        sum_std: f64 = 0,
+        sum_stab: f64 = 0,
+        sum_runtime: f64 = 0,
+    };
+    var aggs = try alloc.alloc(Agg, methods_list.items.len);
+    defer alloc.free(aggs);
+    for (aggs) |*a| a.* = .{};
+
+    var total_timer = try std.time.Timer.start();
+    var round: usize = 0;
+    while (true) : (round += 1) {
+        for (methods_list.items, 0..) |m, i| {
+            const seed = args.seed ^ (@as(u64, @intCast(round)) * 0x9E3779B97F4A7C15) ^ (@as(u64, @intCast(@intFromEnum(m))) * 0xD1B54A32D192ED03);
+            const e = try evaluateMethod(alloc, d, m, args.k, args.cv, seed);
+            aggs[i].runs += 1;
+            aggs[i].sum_mean += e.cv_score_mean;
+            aggs[i].sum_std += e.cv_score_std;
+            aggs[i].sum_stab += e.stability_jaccard;
+            aggs[i].sum_runtime += e.runtime_sec;
+        }
+
+        const elapsed_sec = @as(f64, @floatFromInt(total_timer.read())) / 1e9;
+        if (args.time_budget_sec > 0) {
+            if (elapsed_sec >= @as(f64, @floatFromInt(args.time_budget_sec))) break;
+        } else {
+            if (round + 1 >= args.repeats) break;
+        }
+    }
+
     var evals = try alloc.alloc(MethodEval, methods_list.items.len);
     defer alloc.free(evals);
-
     for (methods_list.items, 0..) |m, i| {
-        evals[i] = try evaluateMethod(alloc, d, m, args.k, args.cv);
-        std.debug.print("method={s} mean={d:.6} std={d:.6} stability={d:.3} runtime={d:.3}s\n", .{
+        const r = @max(aggs[i].runs, 1);
+        evals[i] = .{
+            .method = m,
+            .k = args.k,
+            .runs = aggs[i].runs,
+            .cv_score_mean = aggs[i].sum_mean / @as(f64, @floatFromInt(r)),
+            .cv_score_std = aggs[i].sum_std / @as(f64, @floatFromInt(r)),
+            .stability_jaccard = aggs[i].sum_stab / @as(f64, @floatFromInt(r)),
+            .runtime_sec = aggs[i].sum_runtime,
+        };
+        std.debug.print("method={s} runs={} mean={d:.6} std={d:.6} stability={d:.3} runtime_sum={d:.3}s\n", .{
             methodName(m),
+            evals[i].runs,
             evals[i].cv_score_mean,
             evals[i].cv_score_std,
             evals[i].stability_jaccard,

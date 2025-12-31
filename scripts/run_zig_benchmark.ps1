@@ -10,6 +10,9 @@ param(
   [int]$Cv = 5,
   [string]$Methods = "pearson,spearman,mi",
   [string]$Store = "experience/experience.jsonl",
+  [int]$Repeats = 1,
+  [int]$TimeBudgetSec = 0,
+  [UInt64]$Seed = 0,
   [ValidateSet("Debug", "ReleaseSafe", "ReleaseFast", "ReleaseSmall")]
   [string]$Optimize = "ReleaseFast",
 
@@ -98,6 +101,9 @@ Write-Host "Store    : $storeAbs (as $storeRelFromZigDir)"
 Write-Host "Optimize : $Optimize"
 Write-Host "Methods  : $Methods"
 Write-Host "K/CV     : $K / $Cv"
+Write-Host "Repeats  : $Repeats"
+Write-Host "Budget(s): $TimeBudgetSec"
+Write-Host "Seed     : $Seed"
 
 Push-Location $zigDir
 try {
@@ -110,7 +116,10 @@ try {
     "--k", "$K",
     "--cv", "$Cv",
     "--methods", $Methods,
-    "--store", $storeRelFromZigDir
+    "--store", $storeRelFromZigDir,
+    "--repeats", "$Repeats",
+    "--time-budget-sec", "$TimeBudgetSec",
+    "--seed", "$Seed"
   )
 
   if ($ExtraZigArgs.Count -gt 0) {

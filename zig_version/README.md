@@ -22,6 +22,7 @@ powershell -ExecutionPolicy Bypass -File scripts/run_zig_benchmark.ps1 `
   -Csv data/big.csv -Target label -K 50 -Cv 5 `
   -Methods pearson,spearman,mi `
   -Store experience/experience.jsonl `
+  -TimeBudgetSec 900 `
   -Optimize ReleaseFast
 ```
 
