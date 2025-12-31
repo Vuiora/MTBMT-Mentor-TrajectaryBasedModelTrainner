@@ -33,23 +33,42 @@ fn methodName(m: Method) []const u8 {
 }
 
 fn parseArgs(alloc: Allocator) !Args {
-    var it = std.process.args();
+    // NOTE: `argsWithAllocator()` allocates argument strings owned by the iterator.
+    // If we return slices into those strings after `it.deinit()`, it becomes a use-after-free.
+    // Therefore we duplicate the strings we need into `alloc` and manage them in `main()`.
+    var it = try std.process.argsWithAllocator(alloc);
+    defer it.deinit();
     _ = it.next(); // exe
+
+    var store = try alloc.dupe(u8, "experience.jsonl");
+    errdefer alloc.free(store);
+
+    var csv_path: ?[]u8 = null;
+    errdefer if (csv_path) |p| alloc.free(p);
+
+    var target: ?[]u8 = null;
+    errdefer if (target) |t| alloc.free(t);
 
     var args = Args{
         .csv_path = null,
         .target = null,
         .k = 20,
         .cv = 5,
-        .store = "experience.jsonl",
+        .store = store,
         .methods = .{ .pearson = true, .spearman = true, .mi = true },
     };
 
     while (it.next()) |a| {
         if (std.mem.eql(u8, a, "--csv")) {
-            args.csv_path = it.next() orelse return error.InvalidArgs;
+            const v = it.next() orelse return error.InvalidArgs;
+            if (csv_path) |old| alloc.free(old);
+            csv_path = try alloc.dupe(u8, v);
+            args.csv_path = csv_path;
         } else if (std.mem.eql(u8, a, "--target")) {
-            args.target = it.next() orelse return error.InvalidArgs;
+            const v = it.next() orelse return error.InvalidArgs;
+            if (target) |old| alloc.free(old);
+            target = try alloc.dupe(u8, v);
+            args.target = target;
         } else if (std.mem.eql(u8, a, "--k")) {
             const v = it.next() orelse return error.InvalidArgs;
             args.k = try std.fmt.parseInt(usize, v, 10);
@@ -57,7 +76,10 @@ fn parseArgs(alloc: Allocator) !Args {
             const v = it.next() orelse return error.InvalidArgs;
             args.cv = try std.fmt.parseInt(usize, v, 10);
         } else if (std.mem.eql(u8, a, "--store")) {
-            args.store = it.next() orelse return error.InvalidArgs;
+            const v = it.next() orelse return error.InvalidArgs;
+            alloc.free(args.store);
+            store = try alloc.dupe(u8, v);
+            args.store = store;
         } else if (std.mem.eql(u8, a, "--methods")) {
             const v = it.next() orelse return error.InvalidArgs;
             args.methods = try parseMethods(v);
@@ -69,18 +91,18 @@ fn parseArgs(alloc: Allocator) !Args {
     }
 
     if (args.csv_path == null or args.target == null) return error.InvalidArgs;
-    _ = alloc;
     return args;
 }
 
 const MethodsMask = struct { pearson: bool, spearman: bool, mi: bool };
 
 const Args = struct {
-    csv_path: ?[]const u8,
-    target: ?[]const u8,
+    // Owned strings (duplicated in parseArgs); freed in `main`.
+    csv_path: ?[]u8,
+    target: ?[]u8,
     k: usize,
     cv: usize,
-    store: []const u8,
+    store: []u8,
     methods: MethodsMask,
 };
 
@@ -126,7 +148,7 @@ const Dataset = struct {
 fn isIntLike(v: f64) bool {
     if (!std.math.isFinite(v)) return false;
     const r = @round(v);
-    return std.math.fabs(v - r) <= 1e-9;
+    return @abs(v - r) <= 1e-9;
 }
 
 fn inferTask(y: []const f64) TaskInfo {
@@ -158,7 +180,7 @@ fn loadCsv(alloc: Allocator, path: []const u8, target_col: []const u8) !Dataset 
     var lines_it = std.mem.splitScalar(u8, content, '\n');
     const header_line_raw = lines_it.next() orelse return error.InvalidCsv;
     const header_line = std.mem.trimRight(u8, header_line_raw, "\r");
-    var headers = std.ArrayList([]const u8).init(alloc);
+    var headers = std.array_list.Managed([]const u8).init(alloc);
     defer headers.deinit();
     try splitCsvLine(alloc, header_line, &headers);
 
@@ -173,7 +195,7 @@ fn loadCsv(alloc: Allocator, path: []const u8, target_col: []const u8) !Dataset 
     const t_idx = target_idx.?;
 
     // Feature names (exclude target)
-    var feature_names = std.ArrayList([]const u8).init(alloc);
+    var feature_names = std.array_list.Managed([]const u8).init(alloc);
     errdefer {
         for (feature_names.items) |s| alloc.free(s);
         feature_names.deinit();
@@ -184,8 +206,8 @@ fn loadCsv(alloc: Allocator, path: []const u8, target_col: []const u8) !Dataset 
     }
 
     // Parse rows
-    var X = std.ArrayList(f64).init(alloc);
-    var y = std.ArrayList(f64).init(alloc);
+    var X = std.array_list.Managed(f64).init(alloc);
+    var y = std.array_list.Managed(f64).init(alloc);
     errdefer {
         X.deinit();
         y.deinit();
@@ -197,13 +219,13 @@ fn loadCsv(alloc: Allocator, path: []const u8, target_col: []const u8) !Dataset 
         const line = std.mem.trimRight(u8, line_raw, "\r");
         if (std.mem.trim(u8, line, " \t").len == 0) continue;
 
-        var cols = std.ArrayList([]const u8).init(alloc);
+        var cols = std.array_list.Managed([]const u8).init(alloc);
         defer cols.deinit();
         try splitCsvLine(alloc, line, &cols);
 
         if (cols.items.len != headers.items.len) continue; // skip malformed
 
-        var yi: f64 = parseF64OrNan(cols.items[t_idx]);
+        const yi: f64 = parseF64OrNan(cols.items[t_idx]);
         try y.append(yi);
 
         for (cols.items, 0..) |c, i| {
@@ -236,7 +258,7 @@ fn loadCsv(alloc: Allocator, path: []const u8, target_col: []const u8) !Dataset 
     };
 }
 
-fn splitCsvLine(alloc: Allocator, line: []const u8, out: *std.ArrayList([]const u8)) !void {
+fn splitCsvLine(alloc: Allocator, line: []const u8, out: *std.array_list.Managed([]const u8)) !void {
     // very small CSV splitter (no escaped quotes)
     _ = alloc;
     var start: usize = 0;
@@ -316,7 +338,7 @@ fn pearsonAbsScores(alloc: Allocator, d: Dataset) ![]f64 {
         }
         const x_std = std.math.sqrt(x_var / @as(f64, @floatFromInt(@max(x_cnt, 1)))) + 1e-12;
         const corr = (cov / n_f) / (x_std * y_std);
-        scores[j] = std.math.fabs(corr);
+        scores[j] = @abs(corr);
     }
 
     return scores;
@@ -355,7 +377,7 @@ fn rankData(alloc: Allocator, v: []const f64) ![]f64 {
 }
 
 fn spearmanAbsScores(alloc: Allocator, d: Dataset) ![]f64 {
-    var y_rank = try rankData(alloc, d.y);
+    const y_rank = try rankData(alloc, d.y);
     defer alloc.free(y_rank);
 
     var scores = try alloc.alloc(f64, d.p);
@@ -392,7 +414,7 @@ fn spearmanAbsScores(alloc: Allocator, d: Dataset) ![]f64 {
             yvar += dy * dy;
         }
         const denom = (std.math.sqrt(xvar) + 1e-12) * (std.math.sqrt(yvar) + 1e-12);
-        scores[j] = std.math.fabs(cov / denom);
+        scores[j] = @abs(cov / denom);
     }
     return scores;
 }
@@ -471,7 +493,7 @@ fn miBinnedScores(alloc: Allocator, d: Dataset, bins: usize) ![]f64 {
                 const pxy = @as(f64, @floatFromInt(c)) / n_f;
                 const px = @as(f64, @floatFromInt(x_cnt[bx])) / n_f;
                 const py = @as(f64, @floatFromInt(y_cnt[by])) / n_f;
-                mi += pxy * std.math.log(pxy / (px * py + 1e-18) + 1e-18);
+                mi += pxy * std.math.log(f64, std.math.e, pxy / (px * py + 1e-18) + 1e-18);
             }
         }
         scores[j] = mi;
@@ -501,22 +523,22 @@ fn jaccard(a: []const usize, b: []const usize) f64 {
     defer sa.deinit();
     for (a) |v| _ = sa.put(v, {}) catch {};
     var inter: usize = 0;
-    var union: usize = sa.count();
+    var union_count: usize = sa.count();
     for (b) |v| {
         if (sa.contains(v)) {
             inter += 1;
         } else {
-            union += 1;
+            union_count += 1;
         }
     }
-    if (union == 0) return 1.0;
-    return @as(f64, @floatFromInt(inter)) / @as(f64, @floatFromInt(union));
+    if (union_count == 0) return 1.0;
+    return @as(f64, @floatFromInt(inter)) / @as(f64, @floatFromInt(union_count));
 }
 
 fn stratifiedFolds(alloc: Allocator, y: []const f64, kfold: usize, seed: u64) ![][]usize {
     // binary/int labels assumed
-    var class0 = std.ArrayList(usize).init(alloc);
-    var class1 = std.ArrayList(usize).init(alloc);
+    var class0 = std.array_list.Managed(usize).init(alloc);
+    var class1 = std.array_list.Managed(usize).init(alloc);
     defer class0.deinit();
     defer class1.deinit();
     for (y, 0..) |v, i| {
@@ -526,23 +548,23 @@ fn stratifiedFolds(alloc: Allocator, y: []const f64, kfold: usize, seed: u64) ![
             try class0.append(i);
         }
     }
-    var prng = std.rand.DefaultPrng.init(seed);
+    var prng = std.Random.DefaultPrng.init(seed);
     prng.random().shuffle(usize, class0.items);
     prng.random().shuffle(usize, class1.items);
 
     var folds = try alloc.alloc([]usize, kfold);
-    for (folds, 0..) |*f, _| f.* = &[_]usize{};
+    for (folds) |*f| f.* = &[_]usize{};
 
     // fill each fold
-    var tmp = std.ArrayList(usize).init(alloc);
+    var tmp = std.array_list.Managed(usize).init(alloc);
     defer tmp.deinit();
     var f: usize = 0;
     while (f < kfold) : (f += 1) {
         tmp.clearRetainingCapacity();
-        var i0: usize = f;
-        while (i0 < class0.items.len) : (i0 += kfold) try tmp.append(class0.items[i0]);
-        var i1: usize = f;
-        while (i1 < class1.items.len) : (i1 += kfold) try tmp.append(class1.items[i1]);
+        var idx0: usize = f;
+        while (idx0 < class0.items.len) : (idx0 += kfold) try tmp.append(class0.items[idx0]);
+        var idx1: usize = f;
+        while (idx1 < class1.items.len) : (idx1 += kfold) try tmp.append(class1.items[idx1]);
         folds[f] = try tmp.toOwnedSlice();
     }
     return folds;
@@ -552,13 +574,13 @@ fn kfoldFolds(alloc: Allocator, n: usize, kfold: usize, seed: u64) ![][]usize {
     var idx = try alloc.alloc(usize, n);
     var i: usize = 0;
     while (i < n) : (i += 1) idx[i] = i;
-    var prng = std.rand.DefaultPrng.init(seed);
+    var prng = std.Random.DefaultPrng.init(seed);
     prng.random().shuffle(usize, idx);
 
     var folds = try alloc.alloc([]usize, kfold);
     var f: usize = 0;
     while (f < kfold) : (f += 1) {
-        var tmp = std.ArrayList(usize).init(alloc);
+        var tmp = std.array_list.Managed(usize).init(alloc);
         errdefer tmp.deinit();
         var j: usize = f;
         while (j < n) : (j += kfold) try tmp.append(idx[j]);
@@ -641,7 +663,7 @@ fn logisticTrainPredictAuc(
         const ntr = @as(f64, @floatFromInt(@max(train_idx.len, 1)));
         var g: usize = 0;
         while (g < k + 1) : (g += 1) {
-            var reg = 0.0;
+            var reg: f64 = 0.0;
             if (g > 0) reg = l2 * w[g];
             w[g] -= lr * ((grad[g] / ntr) + reg);
         }
@@ -718,7 +740,7 @@ fn ridgeTrainPredictR2(
     while (j < k) : (j += 1) A[j * k + j] += alpha;
 
     // Solve A w = b via Gauss-Jordan
-    var w = try alloc.alloc(f64, k);
+    const w = try alloc.alloc(f64, k);
     defer alloc.free(w);
     try solveLinearSystemInPlace(alloc, A, b, w, k);
 
@@ -749,7 +771,7 @@ fn solveLinearSystemInPlace(alloc: Allocator, A: []f64, b: []f64, out: []f64, n:
     while (i < n) : (i += 1) {
         // pivot
         var pivot = A[i * n + i];
-        if (std.math.fabs(pivot) < 1e-12) pivot = 1e-12;
+        if (@abs(pivot) < 1e-12) pivot = 1e-12;
         var j: usize = 0;
         while (j < n) : (j += 1) A[i * n + j] /= pivot;
         b[i] /= pivot;
@@ -759,7 +781,7 @@ fn solveLinearSystemInPlace(alloc: Allocator, A: []f64, b: []f64, out: []f64, n:
         while (r < n) : (r += 1) {
             if (r == i) continue;
             const factor = A[r * n + i];
-            if (std.math.fabs(factor) < 1e-18) continue;
+            if (@abs(factor) < 1e-18) continue;
             j = 0;
             while (j < n) : (j += 1) A[r * n + j] -= factor * A[i * n + j];
             b[r] -= factor * b[i];
@@ -788,7 +810,7 @@ fn evaluateMethod(alloc: Allocator, d: Dataset, method: Method, k: usize, cv: us
     while (f < cv) : (f += 1) {
         const test_idx = folds[f];
         // train_idx = all others
-        var train = std.ArrayList(usize).init(alloc);
+        var train = std.array_list.Managed(usize).init(alloc);
         defer train.deinit();
         var g: usize = 0;
         while (g < cv) : (g += 1) {
@@ -917,11 +939,21 @@ fn writeExperienceJsonl(
     evals: []const MethodEval,
     best: MethodEval,
 ) !void {
-    var file = try std.fs.cwd().openFile(store_path, .{ .mode = .write_only });
+    // Ensure parent directory exists (if any), then append-or-create the jsonl file.
+    if (std.fs.path.dirname(store_path)) |dir| {
+        // `store_path` may be relative (including `..`); makePath resolves it from cwd.
+        try std.fs.cwd().makePath(dir);
+    }
+
+    // Use createFile with truncate=false so it creates if missing, otherwise appends.
+    var file = try std.fs.cwd().createFile(store_path, .{
+        .read = true,
+        .truncate = false,
+    });
     defer file.close();
     try file.seekFromEnd(0);
 
-    var buf = std.ArrayList(u8).init(alloc);
+    var buf = std.array_list.Managed(u8).init(alloc);
     defer buf.deinit();
 
     // minimal JSON (string builder)
@@ -977,6 +1009,11 @@ pub fn main() !void {
         }
         return err;
     };
+    defer {
+        if (args.csv_path) |p| alloc.free(p);
+        if (args.target) |t| alloc.free(t);
+        alloc.free(args.store);
+    }
 
     const d = try loadCsv(alloc, args.csv_path.?, args.target.?);
     defer {
@@ -995,7 +1032,7 @@ pub fn main() !void {
         .approx_task = d.task,
     };
 
-    var methods_list = std.ArrayList(Method).init(alloc);
+    var methods_list = std.array_list.Managed(Method).init(alloc);
     defer methods_list.deinit();
     if (args.methods.pearson) try methods_list.append(.pearson);
     if (args.methods.spearman) try methods_list.append(.spearman);

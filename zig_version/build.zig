@@ -4,11 +4,16 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const exe = b.addExecutable(.{
-        .name = "mtbmt_benchmark",
+    // Zig 0.15+ Build API: ExecutableOptions requires `root_module` instead of `root_source_file`.
+    const root_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+    });
+
+    const exe = b.addExecutable(.{
+        .name = "mtbmt_benchmark",
+        .root_module = root_module,
     });
 
     b.installArtifact(exe);

@@ -13,6 +13,20 @@
 
 本仓库 CI/环境未必自带 Zig。请先安装 Zig（建议 0.12+）。
 
+#### 推荐：使用外置启动脚本（Windows PowerShell）
+
+在仓库根目录运行（路径以仓库根目录为基准）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run_zig_benchmark.ps1 `
+  -Csv data/big.csv -Target label -K 50 -Cv 5 `
+  -Methods pearson,spearman,mi `
+  -Store experience/experience.jsonl `
+  -Optimize ReleaseFast
+```
+
+#### 直接运行（手动方式）
+
 在仓库根目录运行：
 
 ```bash

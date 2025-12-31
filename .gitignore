@@ -13,6 +13,10 @@ ENV/
 target/
 Cargo.lock
 
+# Zig
+.zig-cache/
+zig_version/.zig-cache/
+
 # IDE
 .vscode/
 .idea/
