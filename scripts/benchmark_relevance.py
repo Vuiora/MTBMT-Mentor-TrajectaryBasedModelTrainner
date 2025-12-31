@@ -1,6 +1,7 @@
 import argparse
 import hashlib
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -35,6 +36,27 @@ def _parse_methods(s: str | None) -> set[str] | None:
     return set(items)
 
 
+@dataclass
+class _Progress:
+    enabled: bool = True
+    last_line_len: int = 0
+
+    def update(self, msg: str) -> None:
+        if not self.enabled:
+            return
+        # 单行刷新：避免引入 tqdm 依赖，兼容 PowerShell/cmd
+        line = msg.replace("\n", " ")
+        pad = max(self.last_line_len - len(line), 0)
+        print("\r" + line + (" " * pad), end="", flush=True)
+        self.last_line_len = len(line)
+
+    def done(self) -> None:
+        if not self.enabled:
+            return
+        print()  # 换行收尾
+        self.last_line_len = 0
+
+
 def main():
     ap = argparse.ArgumentParser(description="Benchmark feature relevance scorers and store experience (JSONL).")
     ap.add_argument("--csv", required=True, help="CSV dataset path")
@@ -58,6 +80,7 @@ def main():
         default=0,
         help="If >0, keep running benchmarks until the wall-clock budget is reached (overrides --runs).",
     )
+    ap.add_argument("--no-progress", action="store_true", help="Disable progress output.")
     args = ap.parse_args()
 
     df = pd.read_csv(args.csv)
@@ -100,11 +123,18 @@ def main():
 
     meta = compute_dataset_meta_features(X, y).as_dict()
     store = ExperienceStore(args.store)
+    progress = _Progress(enabled=not args.no_progress)
 
     def _one_run(run_idx: int) -> None:
         evaluations = {}
         eval_objs = []
-        for s in scorers:
+        total_methods = max(len(scorers), 1)
+        t_run0 = time.time()
+        for mi, s in enumerate(scorers, start=1):
+            progress.update(
+                f"[run {run_idx}] method {mi}/{total_methods}: {s.name} "
+                f"(k={args.k}, cv={args.cv}) elapsed={time.time() - t_run0:.1f}s"
+            )
             ev = evaluate_relevance_method(
                 X,
                 y,
@@ -117,6 +147,7 @@ def main():
             )
             evaluations[ev.method_name] = ev.as_dict()
             eval_objs.append(ev)
+        progress.done()
 
         # 选择规则：cv_score_mean 最大；如相同则选稳定性更高；再相同选更快
         eval_objs.sort(key=lambda e: (e.cv_score_mean, e.stability_jaccard, -e.runtime_sec), reverse=True)
@@ -154,8 +185,11 @@ def main():
         deadline = time.time() + float(args.time_budget_sec)
         run_idx = 1
         while time.time() < deadline:
+            remaining = max(deadline - time.time(), 0.0)
+            progress.update(f"starting run {run_idx} (time remaining ~{remaining/60.0:.1f} min)")
             _one_run(run_idx)
             run_idx += 1
+        progress.done()
     else:
         for i in range(1, int(args.runs) + 1):
             _one_run(i)

@@ -28,6 +28,9 @@ Thumbs.db
 *.json
 !sample_trajectories.json
 
+# Runtime outputs
+experience/*.jsonl
+
 # Test files
 test_foo/
 
