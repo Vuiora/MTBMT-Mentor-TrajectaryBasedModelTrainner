@@ -109,7 +109,26 @@ def main() -> int:
     ap.add_argument("--mode", choices=["rerank", "replace"], default="rerank")
     ap.add_argument("--shortlist-k", type=int, default=9)
     ap.add_argument("--alpha", type=float, default=0.60, help="mix weight: alpha*proba + (1-alpha)*score_norm")
+    ap.add_argument("--max-swaps", type=int, default=-1, help="Max replacements vs baseline promotions per rung (-1 means k). Smaller -> less noisy.")
+    ap.add_argument(
+        "--min-mix-margin",
+        type=float,
+        default=0.0,
+        help="Only swap-in if mix(best_extra) > mix(worst_promoted) + margin. Larger -> more conservative.",
+    )
+    ap.add_argument(
+        "--min-proba",
+        type=float,
+        default=0.0,
+        help="Only allow swap-in if reranker proba >= this threshold (e.g. 0.6).",
+    )
     ap.add_argument("--pos-top-frac", type=float, default=0.35, help="Positive label fraction among promotions (training).")
+    ap.add_argument(
+        "--label-kind",
+        choices=["uplift", "next_score"],
+        default="uplift",
+        help="Training label for reranker: uplift (o2-o1) or next_score (o2). next_score is often less noisy.",
+    )
     args = ap.parse_args()
 
     search_space: Dict[str, Tuple[float, float, str]] = {
@@ -154,6 +173,7 @@ def main() -> int:
             min_resource=int(args.min_resource),
             max_resource=int(args.max_resource),
             positive_top_frac=float(args.pos_top_frac),
+            label_kind=str(args.label_kind),
         )
         X_rows_all.extend(X_rows)
         y_rows_all.extend(y_rows)
@@ -208,6 +228,9 @@ def main() -> int:
             mode=str(args.mode),
             shortlist_k=int(args.shortlist_k),
             alpha=float(args.alpha),
+            max_swaps=(None if int(args.max_swaps) < 0 else int(args.max_swaps)),
+            min_mix_margin=float(args.min_mix_margin),
+            min_proba=float(args.min_proba),
         )
 
         # For a fair "final" metric, compare the best score at max_resource.
@@ -258,7 +281,11 @@ def main() -> int:
     print()
     print("=== Guided-ASHA Evaluation Summary ===")
     print(f"train_seeds={len(train_seeds)} test_seeds={len(test_seeds)} n0={args.n0} eta={args.eta} R={args.max_resource}")
-    print(f"guided: mode={args.mode} shortlist_k={args.shortlist_k} alpha={args.alpha}")
+    max_swaps_disp = "k" if int(args.max_swaps) < 0 else str(int(args.max_swaps))
+    print(
+        f"guided: mode={args.mode} shortlist_k={args.shortlist_k} alpha={args.alpha} label_kind={args.label_kind} "
+        f"max_swaps={max_swaps_disp} min_mix_margin={args.min_mix_margin} min_proba={args.min_proba}"
+    )
     print()
     print(f"train_reranker_time_sec: {t_train:.3f}")
     print(f"eval_time_sec          : {t_eval:.3f}")

@@ -295,12 +295,15 @@ def collect_promotion_training_data(
     min_resource: int,
     max_resource: int,
     positive_top_frac: float = 0.35,
+    label_kind: str = "uplift",  # uplift|next_score
 ) -> Tuple[List[Dict[str, Any]], List[int]]:
     """
     Run baseline ASHA once and build a supervised dataset:
     - Each promoted config produces a training row at its current rung
-    - Label is 1 if its observed uplift to next rung is in the top fraction
-      among promoted configs of that rung.
+    - Label is 1 if the chosen label signal is in the top fraction among promoted configs of that rung.
+      label_kind:
+        - "uplift":     o2.score - o1.score (current default, can be noisy if curves are flat)
+        - "next_score": o2.score (often less noisy than uplift; focuses on immediate next rung performance)
 
     This is intentionally lightweight: it only uses promotions we actually evaluate.
     """
@@ -344,6 +347,9 @@ def collect_promotion_training_data(
     # Build training rows from promotions where we have next rung score
     X_rows: List[Dict[str, Any]] = []
     y_rows: List[int] = []
+    lk = (label_kind or "uplift").strip().lower()
+    if lk not in {"uplift", "next_score"}:
+        raise ValueError(f"unknown label_kind={label_kind!r}, expected 'uplift' or 'next_score'")
     for rung in range(len(levels) - 1):
         resource = levels[rung]
         next_resource = levels[rung + 1]
@@ -356,14 +362,15 @@ def collect_promotion_training_data(
             if o1 is None or o2 is None:
                 continue
             uplift = float(o2.score - o1.score)
-            pairs.append((o1, o2, uplift))
+            signal = float(o2.score) if lk == "next_score" else float(uplift)
+            pairs.append((o1, o2, signal))
         if not pairs:
             continue
 
-        uplifts = np.asarray([u for _a, _b, u in pairs], dtype=float)
-        # positive if uplift is in top fraction
-        q = float(np.quantile(uplifts, 1.0 - float(positive_top_frac)))
-        for o1, _o2, u in pairs:
+        vals = np.asarray([u for _a, _b, u in pairs], dtype=float)
+        # positive if signal is in top fraction
+        q = float(np.quantile(vals, 1.0 - float(positive_top_frac)))
+        for o1, _o2, v in pairs:
             row = _hpo_feature_row(
                 dataset_meta=meta,
                 cfg=o1.config,
@@ -373,7 +380,7 @@ def collect_promotion_training_data(
                 traj_values=o1.traj_values,
             )
             X_rows.append(row)
-            y_rows.append(1 if float(u) >= q else 0)
+            y_rows.append(1 if float(v) >= q else 0)
 
     return X_rows, y_rows
 
@@ -393,6 +400,9 @@ def run_guided_asha(
     mode: str = "rerank",
     shortlist_k: int = 9,
     alpha: float = 0.6,
+    max_swaps: Optional[int] = None,
+    min_mix_margin: float = 0.0,
+    min_proba: float = 0.0,
 ) -> GuidedAshaRunResult:
     """
     Guided-ASHA:
@@ -402,6 +412,13 @@ def run_guided_asha(
     - mode:
         - "rerank": only rerank the top shortlist_k by score (safer)
         - "replace": rerank all candidates (more aggressive)
+
+    Noise-reduction guardrails (optional):
+    - max_swaps: maximum number of replacements against baseline promotions per rung.
+      Setting a small value makes guidance more conservative.
+    - min_mix_margin: only swap-in if the candidate beats the current worst promoted by at least this margin in mix score.
+    - min_proba: only allow swap-in if the candidate's reranker probability >= this threshold.
+      Useful when RF probabilities are noisy around 0.5.
     """
     meta = compute_dataset_meta_features(X, y).as_dict()
     rng = _default_rng(seed)
@@ -461,8 +478,60 @@ def run_guided_asha(
         score_norm = _normalize_01(np.asarray([o.score for o in cand_pool], dtype=float))
         mix = float(alpha) * np.asarray(proba, dtype=float) + (1.0 - float(alpha)) * score_norm
 
-        order = np.argsort(-mix)
-        guided_promoted = [cand_pool[int(i)].config for i in order[:k]]
+        # Start from baseline promotions, then do conservative swap-in from candidate pool.
+        # When max_swaps=k and min_mix_margin=0, this converges to "top-k by mix" within cand_pool (matches previous behavior).
+        max_swaps_eff = k if max_swaps is None else max(0, int(max_swaps))
+        min_mix_margin_eff = float(min_mix_margin)
+        min_proba_eff = float(min_proba)
+
+        # Build quick lookup from config identity to position in cand_pool.
+        idx_by_cfg = {id(o.config): i for i, o in enumerate(cand_pool)}
+        baseline_idx = [idx_by_cfg.get(id(c), None) for c in baseline_promoted]
+        baseline_idx = [i for i in baseline_idx if i is not None]
+
+        in_baseline = {int(i) for i in baseline_idx}
+        extra_idx = [i for i in range(len(cand_pool)) if i not in in_baseline]
+
+        # Sort candidates: extras by descending mix; baseline by ascending mix.
+        extra_idx.sort(key=lambda i: float(mix[i]), reverse=True)
+        baseline_idx.sort(key=lambda i: float(mix[i]))
+
+        chosen_idx = list(baseline_idx)
+        chosen_set = set(chosen_idx)
+
+        swaps_done = 0
+        bi = 0  # pointer to current worst baseline (ascending)
+        ei = 0  # pointer to current best extra (descending)
+
+        while swaps_done < max_swaps_eff and bi < len(baseline_idx) and ei < len(extra_idx):
+            worst_i = int(baseline_idx[bi])
+            best_i = int(extra_idx[ei])
+
+            # Skip if best_i already chosen (shouldn't happen, but safe)
+            if best_i in chosen_set:
+                ei += 1
+                continue
+
+            # Probability guardrail
+            if min_proba_eff > 0.0 and float(proba[best_i]) < min_proba_eff:
+                ei += 1
+                continue
+
+            # Margin guardrail
+            if float(mix[best_i]) <= float(mix[worst_i]) + min_mix_margin_eff:
+                # Since extras are sorted desc, no future extra can beat this worst by margin.
+                break
+
+            # Perform swap
+            chosen_set.remove(worst_i)
+            chosen_set.add(best_i)
+            swaps_done += 1
+            bi += 1
+            ei += 1
+
+        # Choose final top-k by mix among chosen_set (stable within the selected set)
+        chosen_idx = sorted(chosen_set, key=lambda i: float(mix[int(i)]), reverse=True)[:k]
+        guided_promoted = [cand_pool[int(i)].config for i in chosen_idx]
 
         # disagreement stats (set-based)
         promote_total += 1
