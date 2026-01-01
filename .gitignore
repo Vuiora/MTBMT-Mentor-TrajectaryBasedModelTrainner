@@ -35,6 +35,9 @@ Thumbs.db
 # Runtime outputs
 experience/*.jsonl
 
+# OpenML cache (downloaded at runtime)
+data/openml_cache/
+
 # Test files
 test_foo/
 
