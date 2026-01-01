@@ -8,6 +8,7 @@ env/
 venv/
 ENV/
 .venv
+.venv-*/
 
 # Rust
 target/
@@ -38,6 +39,7 @@ results/
 
 # OpenML cache (downloaded at runtime)
 data/openml_cache/
+data/openml_100/
 
 # Test files
 test_foo/

@@ -15,4 +15,9 @@ gymnasium>=0.29
 gymnasium[atari]>=0.29; python_version < "3.13"
 ale-py>=0.9; python_version < "3.13"
 
+# Optional for Atari DQN training (Breakout)
+# - Recommended: Python 3.11/3.12 for wheels
+torch; python_version < "3.13"
+autorom[accept-rom-license]; python_version < "3.13"
+
 
