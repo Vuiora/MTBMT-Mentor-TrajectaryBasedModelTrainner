@@ -4,7 +4,7 @@
  
  [project]
  name = "mtbmt"
- version = "0.1.0"
+version = "0.1.1"
  description = "Mentor-Trajectory Based Model Trainer: feature relevance quantification + meta-learning algorithm selection."
  readme = "README.md"
  requires-python = ">=3.10"
