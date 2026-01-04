@@ -2,6 +2,8 @@
 
 MTBMT（Mentor-Trajectory Based Model Trainer）围绕“**特征相关性/重要性量化算法选择**”与“**训练轨迹引导**”两条主线，提供一套可复现实验脚本与统一经验库（JSONL）沉淀机制。
 
+English version: `README_EN.md`
+
 ### 本仓库解决什么问题
 
 - **相关性/重要性量化可比较**：用统一评测口径（Utility/稳定性/耗时）把不同方法放到同一尺度下比较。
