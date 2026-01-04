@@ -1,15 +1,16 @@
+from __future__ import annotations
+
 """
 Legacy trajectory utilities.
 
-This repository historically exposed a top-level `trajectary.Trajectary` class
-used by the trajectory feature/label tests in `tests/`.
+This module exists to preserve the original "Trajectary" API used by some docs
+and scripts, while keeping it under the main `mtbmt` package.
 
-The newer code paths live under `mtbmt.*` (e.g. `mtbmt.trajectory_guidance`,
-`mtbmt.decision_tree_trajectory`, `mtbmt.trajectory_features`), but we keep this
-module as a thin, packaged implementation to preserve backwards compatibility.
+Prefer newer modules where possible:
+- `mtbmt.decision_tree_trajectory`
+- `mtbmt.trajectory_features`
+- `mtbmt.trajectory_guidance`
 """
-
-from __future__ import annotations
 
 import json
 from typing import Any, Dict, Optional
@@ -20,15 +21,15 @@ from sklearn.preprocessing import LabelEncoder, StandardScaler
 
 class Trajectary:
     """
-    轨迹类（Trajectory Class）- 倾向学习算法的一个参考实现。
+    A lightweight trajectory container + featurizer.
 
-    trajectory_dict 约定包含：
+    trajectory_dict convention:
     - tendency: list[float]
     - sequence: list[int]
     - selection: list[str]
-    - retrieval_time: float（可缺省，默认 0.0）
-    - trajectory_length: int（可缺省，将自动与实际长度对齐）
-    - decision_effect: float（可缺省，默认 0.0）
+    - retrieval_time: float (optional, default 0.0)
+    - trajectory_length: int (optional; auto-aligned to actual length)
+    - decision_effect: float (optional, default 0.0)
     """
 
     def __init__(self, file_name: str, root_Node_array: Optional[list] = None, trajectory_dict: Optional[dict] = None):
@@ -50,7 +51,6 @@ class Trajectary:
         required = ["retrieval_time", "trajectory_length", "decision_effect"]
         missing = [k for k in required if k not in self.trajectory_dict]
 
-        # Auto-fill trajectory_length
         if "trajectory_length" in missing:
             if "tendency" in self.trajectory_dict:
                 self.trajectory_dict["trajectory_length"] = len(self.trajectory_dict.get("tendency", []))
@@ -59,12 +59,10 @@ class Trajectary:
             else:
                 self.trajectory_dict["trajectory_length"] = 0
 
-        # Defaults for others
         if "retrieval_time" in missing or self.trajectory_dict.get("retrieval_time") is None:
             self.trajectory_dict["retrieval_time"] = 0.0
         if "decision_effect" in missing or self.trajectory_dict.get("decision_effect") is None:
             self.trajectory_dict["decision_effect"] = 0.0
-
         if self.trajectory_dict.get("trajectory_length") is None:
             self.trajectory_dict["trajectory_length"] = 0
 
@@ -79,7 +77,6 @@ class Trajectary:
         return le.fit_transform(np_selection_dict)
 
     def cal_mixed_tendency_sequence_selection(self, method: str = "concatenate", normalize: bool = False) -> np.ndarray:
-        # Ensure the 3 arrays exist and aligned
         assert len(self.np_tendency_dict) == len(self.np_sequence_dict) == len(self.np_selection_dict), "三个数组长度必须一致"
 
         tendency = self.np_tendency_dict.astype(np.float64)

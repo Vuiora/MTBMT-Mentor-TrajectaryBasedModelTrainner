@@ -4,7 +4,7 @@
 验证每条轨迹都有：检索时间、轨迹长度、决策效果。
 """
 
-from trajectary import Trajectary
+from mtbmt.trajectory_legacy import Trajectary
 
 
 def test_labels_preserved_when_present():

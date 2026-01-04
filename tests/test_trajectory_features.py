@@ -8,7 +8,7 @@
 
 import numpy as np
 
-from trajectary import Trajectary
+from mtbmt.trajectory_legacy import Trajectary
 
 
 def test_trajectory_valulization_shapes_and_raw_columns():
