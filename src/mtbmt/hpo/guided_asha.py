@@ -9,7 +9,7 @@ import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 
 from mtbmt.meta_features import compute_dataset_meta_features
-from mtbmt.trajectory import compute_trajectory_features
+from mtbmt.trajectory_features import compute_trajectory_features
 
 
 @dataclass(frozen=True)

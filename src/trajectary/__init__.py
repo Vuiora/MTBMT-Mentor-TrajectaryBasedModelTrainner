@@ -5,8 +5,8 @@ This repository historically exposed a top-level `trajectary.Trajectary` class
 used by the trajectory feature/label tests in `tests/`.
 
 The newer code paths live under `mtbmt.*` (e.g. `mtbmt.trajectory_guidance`,
-`mtbmt.decision_tree_trajectory`, `mtbmt.trajectory`), but we keep this module
-as a thin, packaged implementation to preserve backwards compatibility.
+`mtbmt.decision_tree_trajectory`, `mtbmt.trajectory_features`), but we keep this
+module as a thin, packaged implementation to preserve backwards compatibility.
 """
 
 from __future__ import annotations

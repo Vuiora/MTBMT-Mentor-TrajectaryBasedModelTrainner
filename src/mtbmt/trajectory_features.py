@@ -9,13 +9,13 @@ import numpy as np
 @dataclass(frozen=True)
 class TrajectoryFeatures:
     """
-    学习轨迹特征（元学习用）。
+    Learning-trajectory features (for meta-learning).
 
-    输入通常是一条随迭代变化的序列，例如：
-    - 训练/验证 loss
-    - 训练/验证 score（AUC/Acc/RMSE 等）
-    - 梯度范数、参数更新范数
-    - 每轮特征重要性向量的聚合统计（如 top-k 稳定性曲线）
+    The input is typically a sequence over iterations, e.g.:
+    - train/val loss
+    - train/val score (AUC/Acc/RMSE, etc.)
+    - gradient norms / update norms
+    - aggregated stats of per-epoch feature importance vectors
     """
 
     length: int
@@ -71,7 +71,7 @@ def compute_trajectory_features(values: Iterable[float], *, normalize: bool = Fa
     auc = float(np.trapz(v, dx=1.0))
 
     m = max(2, int(0.2 * length))
-    # 早期/晚期斜率：简单线性拟合
+    # Early/late slopes: simple linear fit.
     x1 = np.arange(m, dtype=float)
     y1 = v[:m]
     early_slope = float(np.polyfit(x1, y1, deg=1)[0])
@@ -94,3 +94,7 @@ def compute_trajectory_features(values: Iterable[float], *, normalize: bool = Fa
         late_slope=late_slope,
         diff_std=diff_std,
     )
+
+
+__all__ = ["TrajectoryFeatures", "compute_trajectory_features"]
+

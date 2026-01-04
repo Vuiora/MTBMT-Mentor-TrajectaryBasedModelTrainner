@@ -14,7 +14,7 @@ class DecisionTreeTrajectorySummary:
     从一棵 sklearn DecisionTreeClassifier 提取“轨迹”并汇总后的统计。
 
     - trajectory_length_mean: 平均路径长度（根->叶的步数）
-    - tendency_features: 对倾向值序列（tendency）做的 mtbmt.trajectory.compute_trajectory_features 统计（可选）
+    - tendency_features: 对倾向值序列（tendency）做的 mtbmt.trajectory_features.compute_trajectory_features 统计（可选）
     - retrieval_time_sec_per_sample: 提取一条轨迹的平均耗时（秒）
     """
 
@@ -91,7 +91,7 @@ def summarize_decision_tree_trajectories(
     *,
     X_samples: np.ndarray,
 ) -> DecisionTreeTrajectorySummary:
-    from mtbmt.trajectory import compute_trajectory_features
+    from mtbmt.trajectory_features import compute_trajectory_features
 
     extractor = DecisionTreeTrajectoryExtractor(clf)
     t0 = time.time()
