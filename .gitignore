@@ -41,6 +41,13 @@ results/
 data/openml_cache/
 data/openml_100/
 
+# Project datasets / large artifacts (keep out of git)
+data/
+entities/
+relations/
+experience/
+results/
+
 # Test files
 test_foo/
 
